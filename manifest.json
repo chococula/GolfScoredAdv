@@ -1,0 +1,16 @@
+{
+  "short_name": "TVPC Golf",
+  "name": "TVPC Golf Skins Scorecard",
+  "icons": [
+    {
+      "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'><rect width='512' height='512' rx='120' fill='%23020617'/><circle cx='256' cy='256' r='210' fill='%23059669' opacity='0.2'/><path d='M170 380 L170 110 L350 170 L170 230 Z' fill='%2310b981'/><rect x='160' y='100' width='16' height='300' rx='8' fill='%23f8fafc'/><ellipse cx='280' cy='390' rx='70' ry='20' fill='%230f172a'/><circle cx='270' cy='380' r='12' fill='%23ffffff'/></svg>",
+      "sizes": "512x512",
+      "type": "image/svg+xml"
+    }
+  ],
+  "start_url": "./index.html",
+  "background_color": "#020617",
+  "theme_color": "#020617",
+  "display": "standalone",
+  "orientation": "portrait"
+}
