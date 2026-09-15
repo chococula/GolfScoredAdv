@@ -19,6 +19,38 @@
     let pollCal = 0;                  // month offset shown in poll calendar
     let showAll = false;              // expanded ranked list in poll view
 
+    /* ---------- live sync (Firebase Realtime DB, optional) ----------
+       If window.SCHED_FIREBASE (firebase-config.js) is present and the SDK loaded,
+       polls sync in realtime; links become short (#p=<id>).
+       Otherwise falls back to the link-chain mode (#s=<data>).
+    */
+    let db = null, liveRef = null, liveStatus = 'off'; // off | connecting | live | error
+    function initLive() {
+        try {
+            if (!window.SCHED_FIREBASE || !window.firebase) return;
+            if (!firebase.apps.length) firebase.initializeApp(window.SCHED_FIREBASE);
+            db = firebase.database();
+            liveStatus = 'connecting';
+            db.ref('.info/connected').on('value', s => { liveStatus = s.val() ? 'live' : 'connecting'; if (!document.getElementById('scheduleModal')?.classList.contains('hidden')) render(); });
+        } catch (e) { console.warn('[sched] live init failed', e); db = null; liveStatus = 'error'; }
+    }
+    function rKey(name) { return name.replace(/[.#$\[\]\/]/g, '_'); }
+    function subscribe(id) {
+        unsubscribe();
+        if (!db) return;
+        liveRef = db.ref('polls/' + id);
+        liveRef.on('value', snap => {
+            const v = snap.val();
+            if (!v || !Array.isArray(v.d)) return;
+            v.r = v.r || {};
+            mergePoll(v);
+            if (view === 'poll' && cur === id) render();
+        });
+    }
+    function unsubscribe() { if (liveRef) { liveRef.off(); liveRef = null; } }
+    function pushPoll(p) { if (db) db.ref('polls/' + p.id).update({ id: p.id, t: p.t, d: p.d, time: p.time || 'any', c: p.c || Date.now() }); }
+    function pushResponse(id, name, resp) { if (db) db.ref('polls/' + id + '/r/' + rKey(name)).set({ n: name, ...resp }); }
+
     /* ---------- encoding ---------- */
     function enc(obj) {
         const s = JSON.stringify(obj);
@@ -36,7 +68,7 @@
     function uid() { return Math.random().toString(36).slice(2, 8); }
     function pollLink(p) {
         const base = location.origin + location.pathname;
-        return base + '#s=' + enc(p);
+        return db ? base + '#p=' + p.id : base + '#s=' + enc(p);
     }
 
     /* ---------- date helpers ---------- */
@@ -59,9 +91,11 @@
 
     /* ---------- tally ---------- */
     function tally(p) {
-        const names = Object.keys(p.r || {});
+        const keys = Object.keys(p.r || {});
+        const nameOf = k => (p.r[k] && p.r[k].n) || k;
+        const names = keys.map(nameOf);
         const rows = p.d.map(date => {
-            const yes = names.filter(n => (p.r[n].d || []).includes(date));
+            const yes = keys.filter(k => (p.r[k].d || []).includes(date)).map(nameOf);
             return { date, yes, count: yes.length };
         });
         const max = Math.max(0, ...rows.map(r => r.count));
@@ -96,7 +130,7 @@
         document.getElementById('scheduleModal').classList.remove('hidden');
         render();
     }
-    function closeModal() { document.getElementById('scheduleModal').classList.add('hidden'); }
+    function closeModal() { unsubscribe(); document.getElementById('scheduleModal').classList.add('hidden'); }
 
     function header(title, backTo) {
         return `<div class="flex justify-between items-center pt-2">
@@ -137,7 +171,7 @@
         return header('Find a Tee Date') + `
             <div class="space-y-3">${cards}</div>
             <button onclick="Sched.go('create')" class="w-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold py-3.5 rounded-xl shadow-md">+ New Date Poll</button>
-            <p class="text-[11px] text-slate-500 text-center leading-relaxed">Works without a server: everyone taps their dates and re-shares the link.<br>Open the newest link to see everyone's answers merged.</p>`;
+            <p class="text-[11px] text-slate-500 text-center leading-relaxed">${db ? '● Live sync on — everyone sees updates instantly.' : 'Works without a server: everyone taps their dates and re-shares the link.<br>Open the newest link to see everyone\'s answers merged.'}</p>`;
     }
 
     /* ---------- CREATE (calendar first) ---------- */
@@ -228,7 +262,7 @@
     function renderPoll(p) {
         const t = tally(p);
         const myName = localStorage.getItem(LS_NAME) || '';
-        const mine = myName && p.r && p.r[myName];
+        const mine = myName && p.r && (p.r[rKey(myName)] || p.r[myName]);
         if (mine && !mySel._touched) { mySel = new Set(mine.d); mySel._touched = true; }
         const timeLabel = { morning: '🌅 Morning', afternoon: '☀️ Afternoon', any: '🕐 Any time' }[p.time || 'any'];
         const count = {}; t.rows.forEach(r => count[r.date] = r.count);
@@ -262,7 +296,9 @@
 
         return header(esc(p.t), 'list') + `
             <div class="flex justify-between items-center -mt-2">
-                <div class="text-xs text-slate-400">${timeLabel} · ${t.names.length} replied</div>
+                <div class="text-xs text-slate-400 flex items-center gap-1.5">
+                    ${liveStatus === 'live' ? '<span class="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span><span class="text-emerald-400 font-bold">Live</span><span>·</span>' : liveStatus === 'connecting' ? '<span class="inline-block w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse"></span><span>·</span>' : ''}
+                    ${timeLabel} · ${t.names.length} replied</div>
                 <input type="text" id="schedName" value="${esc(myName)}" placeholder="Your name" oninput="localStorage.setItem('${LS_NAME}', this.value.trim())"
                     class="w-32 bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-white text-xs text-right focus:outline-none focus:border-emerald-500 font-semibold">
             </div>
@@ -276,7 +312,7 @@
             </div>
             ${detail}
             <button onclick="Sched.submitMine()" class="w-full ${dirty ? 'bg-emerald-500 hover:bg-emerald-400 text-slate-950 shadow-md' : 'bg-slate-800 text-slate-300'} font-bold py-3.5 rounded-xl transition">
-                ${dirty ? (mine ? 'Update & Share Link' : `Save ${mySel.size} date${mySel.size === 1 ? '' : 's'} & Share Link`) : '📤 Share Link'}
+                ${dirty ? (db ? `Save ${mySel.size} date${mySel.size === 1 ? '' : 's'}` : (mine ? 'Update & Share Link' : `Save ${mySel.size} date${mySel.size === 1 ? '' : 's'} & Share Link`)) : '📤 Share Link'}
             </button>
             <button onclick="Sched.toggleAll()" class="w-full text-[11px] text-slate-500 font-semibold py-1">${showAll ? '▲ Hide' : '▼ Show'} all dates ranked</button>
             ${showAll ? `<div class="space-y-1.5">${ranked.map(r => `<button onclick="Sched.focus('${r.date}')" class="w-full flex items-center gap-3 px-3 py-2 rounded-xl border text-left ${r.count === t.max && t.max > 0 ? 'bg-emerald-500/10 border-emerald-500/40' : 'bg-slate-900 border-slate-800'}">
@@ -318,6 +354,15 @@
 
     /* ---------- incoming link ---------- */
     function handleHash() {
+        const pm = location.hash.match(/^#p=([a-z0-9]+)$/i);
+        if (pm) {
+            history.replaceState(null, '', location.pathname + location.search);
+            const id = pm[1];
+            if (!polls[id]) polls[id] = { id, t: 'Loading…', d: [], r: {}, c: Date.now() };
+            enterPoll(id); openModal('poll', id);
+            if (!db) toast('Live sync unavailable — ask for the full link');
+            return;
+        }
         const m = location.hash.match(/^#s=(.+)$/);
         if (!m) return;
         const p = dec(m[1]);
@@ -332,12 +377,13 @@
     function enterPoll(id) {
         cur = id; mySel = new Set(); mySel._touched = false; focusDate = null; showAll = false;
         const p = polls[id]; pollCal = p && p.d.length ? Math.max(0, monthOffsetOf(p.d[0])) : 0;
+        subscribe(id);
     }
 
     /* ---------- public API ---------- */
     window.Sched = {
         open(id) { enterPoll(id); openModal('poll', id); },
-        go(v) { view = v; if (v === 'create') { draft = { title: '', dates: new Set(), time: 'any' }; calOffset = 0; } render(); },
+        go(v) { if (v !== 'poll') unsubscribe(); view = v; if (v === 'create') { draft = { title: '', dates: new Set(), time: 'any' }; calOffset = 0; } render(); },
         close: closeModal,
         month(d) { calOffset = Math.max(0, calOffset + d); render(); },
         pollMonth(d) { pollCal += d; render(); },
@@ -365,7 +411,7 @@
         createPoll() {
             if (!draft.dates.size) return;
             const p = { id: uid(), t: (draft.title || 'Golf Round').trim(), d: [...draft.dates].sort(), time: draft.time, r: {}, c: Date.now() };
-            polls[p.id] = p; savePolls();
+            polls[p.id] = p; savePolls(); pushPoll(p);
             enterPoll(p.id); view = 'poll'; render();
             share(summaryText(p), pollLink(p));
         },
@@ -374,9 +420,11 @@
             if (!name) { toast('Enter your name first'); return; }
             localStorage.setItem(LS_NAME, name);
             const p = polls[cur];
-            p.r[name] = { d: [...mySel].sort(), ts: Date.now() };
-            savePolls(); render();
-            share(summaryText(p), pollLink(p));
+            const resp = { d: [...mySel].sort(), ts: Date.now() };
+            if (p.r[name] && rKey(name) !== name) delete p.r[name];
+            p.r[rKey(name)] = { n: name, ...resp };
+            savePolls(); pushResponse(p.id, name, resp); render();
+            if (db) toast('Saved ✓ everyone sees it live'); else share(summaryText(p), pollLink(p));
         },
         shareSummary(id) { share(summaryText(polls[id]), pollLink(polls[id])); },
         async copyLink(id) {
@@ -389,6 +437,6 @@
         }
     };
 
-    window.addEventListener('load', () => { injectUI(); handleHash(); });
+    window.addEventListener('load', () => { initLive(); injectUI(); handleHash(); });
     window.addEventListener('hashchange', handleHash);
 })();
